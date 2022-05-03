@@ -1,12 +1,12 @@
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
-use cosmwasm_std::{to_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult, StdError, Uint128};
+use cosmwasm_std::{to_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult, StdError, Uint128, from_binary, Addr};
 use cw2::set_contract_version;
 use cw20::{Cw20ReceiveMsg,};
 
 use crate::error::ContractError;
-use crate::msg::{ExecuteMsg, QueryMsg, LoanInfoResponse};
-use crate::state::{UserData, USER_INFO};
+use crate::msg::{ExecuteMsg, QueryMsg, LoanInfoResponse, InstantiateMsg, Cw20HookMsg};
+use crate::state::{UserData, USER_INFO, Config, CONFIG};
 
 // version info for migration info
 const CONTRACT_NAME: &str = "crates.io:lending-app";
@@ -17,13 +17,21 @@ pub fn instantiate(
     deps: DepsMut,
     _env: Env,
     info: MessageInfo,
+    msg: InstantiateMsg,
 ) -> Result<Response, ContractError> {
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
+
+    let config = Config {
+        admin: msg.admin,
+        generic_token: msg.generic_token,
+    };
+    CONFIG.save(deps.storage, &config)?;
 
     // TODO change
     Ok(Response::new()
         .add_attribute("method", "instantiate")
-        .add_attribute("owner", info.sender))
+        .add_attribute("admin", info.sender)
+        .add_attribute("generic token", config.generic_token))
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -47,7 +55,40 @@ pub fn receive_cw20(
     info: MessageInfo,
     cw20_msg: Cw20ReceiveMsg,
 ) -> Result<Response, ContractError> {
-    Ok(Response::new().add_attribute("not", "yet implemented"))
+    let contract_addr = info.sender;
+    match from_binary(&cw20_msg.msg) {
+        Ok(Cw20HookMsg::Deposit {}) => {
+            // only asset contract can execute this message
+            let config: Config = CONFIG.load(deps.storage)?;
+            if contract_addr != config.generic_token {
+                return Err(ContractError::Unauthorized {});
+            }
+
+            let cw20_sender_addr = deps.api.addr_validate(&cw20_msg.sender)?;
+            try_deposit(deps, cw20_sender_addr, cw20_msg.amount)
+        }
+        _ => Err(ContractError::MissingDepositHook {}),
+    }
+}
+
+pub fn try_deposit(deps: DepsMut, user_addr: Addr, amount: Uint128) -> Result<Response, ContractError> {
+    USER_INFO.update(
+        deps.storage,
+        &user_addr,
+        |balance: Option<UserData>| -> StdResult<_> { 
+            match balance {
+                Some(user_data) => Ok(
+                    UserData {
+                        generic_token_deposited: user_data.generic_token_deposited + amount,
+                    }
+                ),
+                None => Ok (UserData {
+                    generic_token_deposited: amount,
+                })
+            }
+        },
+    )?;
+    Ok(Response::default())
 }
 
 pub fn try_withdraw(deps: DepsMut, info: MessageInfo, amount: Uint128) -> Result<Response, ContractError>{
@@ -65,11 +106,11 @@ pub fn try_repay(deps: DepsMut, info: MessageInfo, amount: Uint128) -> Result<Re
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
-        QueryMsg::GetLoanInfo {} => to_binary(&get_loan_info(deps, _env)?),
+        QueryMsg::GetUserInfo {} => to_binary(&get_user_info(deps, _env)?),
     }
 }
 
-pub fn get_loan_info(deps: Deps, _env: Env) -> StdResult<LoanInfoResponse> {
+pub fn get_user_info(deps: Deps, _env: Env) -> StdResult<LoanInfoResponse> {
     Ok(LoanInfoResponse { count: 1 })
 }
 

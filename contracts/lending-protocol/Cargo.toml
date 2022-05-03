@@ -1,5 +1,5 @@
 [package]
-name = "lending-app"
+name = "lending-protocol"
 version = "0.1.0"
 authors = ["jason"]
 edition = "2018"
