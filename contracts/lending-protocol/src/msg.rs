@@ -7,8 +7,8 @@ use cw20::Cw20ReceiveMsg;
 
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
 pub struct InstantiateMsg {
-    pub admin: Addr,
-    pub generic_token: Addr,
+    pub admin: String,
+    pub generic_token: String,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
@@ -34,12 +34,12 @@ pub enum ExecuteMsg {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum QueryMsg {
-    GetUserInfo {},
+    GetUserInfo { address: String },
 }
 
 // We define a custom struct for each query response
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub struct UserInfoResponse {
-    // TODO populate fields
     pub generic_token_deposited: u128,
 }

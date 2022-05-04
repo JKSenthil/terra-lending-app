@@ -5,7 +5,7 @@ use cw2::set_contract_version;
 use cw20::{Cw20ReceiveMsg,};
 
 use crate::error::ContractError;
-use crate::msg::{ExecuteMsg, QueryMsg, LoanInfoResponse, InstantiateMsg, Cw20HookMsg};
+use crate::msg::{ExecuteMsg, QueryMsg, UserInfoResponse, InstantiateMsg, Cw20HookMsg};
 use crate::state::{UserData, USER_INFO, Config, CONFIG};
 
 // version info for migration info
@@ -22,12 +22,11 @@ pub fn instantiate(
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
 
     let config = Config {
-        admin: msg.admin,
-        generic_token: msg.generic_token,
+        admin: deps.api.addr_validate(&msg.admin)?,
+        generic_token: deps.api.addr_validate(&msg.generic_token)?,
     };
     CONFIG.save(deps.storage, &config)?;
 
-    // TODO change
     Ok(Response::new()
         .add_attribute("method", "instantiate")
         .add_attribute("admin", info.sender)
@@ -42,7 +41,7 @@ pub fn execute(
     msg: ExecuteMsg,
 ) -> Result<Response, ContractError> {
     match msg {
-        ExecuteMsg::Receive(_msg) => receive_cw20(deps, _env, info, _msg),
+        ExecuteMsg::Receive(_msg) => receive_cw20(deps, info, _msg),
         ExecuteMsg::Withdraw { amount } => try_withdraw(deps, info, amount), 
         ExecuteMsg::Borrow { amount } => try_borrow(deps, info, amount),
         ExecuteMsg::Repay { amount } => try_repay(deps, info, amount),
@@ -51,14 +50,13 @@ pub fn execute(
 
 pub fn receive_cw20(
     deps: DepsMut,
-    env: Env,
     info: MessageInfo,
     cw20_msg: Cw20ReceiveMsg,
 ) -> Result<Response, ContractError> {
-    let contract_addr = info.sender;
     match from_binary(&cw20_msg.msg) {
         Ok(Cw20HookMsg::Deposit {}) => {
             // only asset contract can execute this message
+            let contract_addr = info.sender;
             let config: Config = CONFIG.load(deps.storage)?;
             if contract_addr != config.generic_token {
                 return Err(ContractError::Unauthorized {});
@@ -106,43 +104,95 @@ pub fn try_repay(deps: DepsMut, info: MessageInfo, amount: Uint128) -> Result<Re
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
-        QueryMsg::GetUserInfo {} => to_binary(&get_user_info(deps, _env)?),
+        QueryMsg::GetUserInfo {address} => to_binary(&get_user_info(deps, address)?),
     }
 }
 
-pub fn get_user_info(deps: Deps, _env: Env) -> StdResult<LoanInfoResponse> {
-    Ok(LoanInfoResponse { count: 1 })
+pub fn get_user_info(deps: Deps, address: String) -> StdResult<Option<UserInfoResponse>> {
+    let address = deps.api.addr_validate(&address)?;
+    let res = match USER_INFO.may_load(deps.storage, &address) {
+        Ok(Some(user_info)) => Some(
+            UserInfoResponse { 
+                generic_token_deposited: user_info.generic_token_deposited.u128() 
+            }
+        ),
+        Ok(None) => None,
+        Err(_) => None,
+    };
+    Ok(res)
 }
 
-// REFERENCE CODE
-// fn query_count(deps: Deps) -> StdResult<CountResponse> {
-//     let state = STATE.load(deps.storage)?;
-//     Ok(CountResponse { count: state.count })
-// }
+// TODO write tests
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cosmwasm_std::testing::{mock_env, mock_info, mock_dependencies};   
+    use cosmwasm_std::{to_binary, Uint128};
 
-// TODO write tests later
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use cosmwasm_std::testing::{mock_dependencies_with_balance, mock_env, mock_info};
-//     use cosmwasm_std::{coins, from_binary};
+    #[test]
+    fn basic_test() {
+        let mut deps = mock_dependencies();
+        let instantiate_msg = InstantiateMsg{ admin: "admin".to_string(), generic_token: "token".to_string() };
+        let info = mock_info("creator", &[]);
+        let env = mock_env();
+        let res = instantiate(deps.as_mut(), env.clone(), info, instantiate_msg).unwrap();
+        assert_eq!(0, res.messages.len());
 
-//     #[test]
-//     fn proper_initialization() {
-//         let mut deps = mock_dependencies_with_balance(&coins(2, "token"));
+        let recv_msg = ExecuteMsg::Receive(Cw20ReceiveMsg {
+            sender: "user1".to_string(),
+            amount: Uint128::from(100u128),
+            msg: to_binary(&Cw20HookMsg::Deposit {}).unwrap(),
+        });
+        let info = mock_info("token", &[]);
+        let res = execute(deps.as_mut(), env.clone(), info.clone(), recv_msg.clone());
+        match res {
+            Ok(_) => {}
+            Err(_) => panic!("Should not have received an error"),
+        }
+        
+        let response : StdResult<Option<UserInfoResponse>> = get_user_info(deps.as_ref(), "user1".to_string());
+        assert_eq!(
+            response,
+            Ok(Some(UserInfoResponse { generic_token_deposited: Uint128::from(100u128).u128() }))
+        );
 
-//         let msg = InstantiateMsg { count: 17 };
-//         let info = mock_info("creator", &coins(1000, "earth"));
+        // test non-existent user
+        let response : StdResult<Option<UserInfoResponse>> = get_user_info(deps.as_ref(), "user2".to_string());
+        assert_eq!(
+            response,
+            Ok(None)
+        );
 
-//         // we can just call .unwrap() to assert this was a success
-//         let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
-//         assert_eq!(0, res.messages.len());
+        // TODO why doesn't this work?
+        // let result = query(
+        //     deps.as_ref(), 
+        //     env.clone(), 
+        //     QueryMsg::GetUserInfo { address: "user1".to_string() }
+        // ).unwrap();
+        // let a : Option<UserInfoResponse> = from_binary(&result).unwrap();
+        // assert_eq!(
+        //     a, 
+        //     Some(UserInfoResponse{ generic_token_deposited: 0 })
+        // )
+    }
+}
 
-//         // it worked, let's query the state
-//         let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
-//         let value: CountResponse = from_binary(&res).unwrap();
-//         assert_eq!(17, value.count);
-//     }
+    // #[test]
+    // fn proper_initialization() {
+    //     let mut deps = mock_dependencies_with_balance(&coins(2, "token"));
+
+    //     let msg = InstantiateMsg { count: 17 };
+    //     let info = mock_info("creator", &coins(1000, "earth"));
+
+    //     // we can just call .unwrap() to assert this was a success
+    //     let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
+    //     assert_eq!(0, res.messages.len());
+
+    //     // it worked, let's query the state
+    //     let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
+    //     let value: CountResponse = from_binary(&res).unwrap();
+    //     assert_eq!(17, value.count);
+    // }
 
 //     #[test]
 //     fn increment() {

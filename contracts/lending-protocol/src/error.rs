@@ -14,6 +14,9 @@ pub enum ContractError {
 
     #[error("Missing Desposit Hook")]
     MissingDepositHook {},
+
+    #[error("User does not exist")]
+    UserDNE {},
     // Add any other custom errors you like here.
     // Look at https://docs.rs/thiserror/1.0.21/thiserror/ for details.
 }
