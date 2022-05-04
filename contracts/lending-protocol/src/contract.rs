@@ -73,11 +73,11 @@ pub fn try_deposit(deps: DepsMut, user_addr: Addr, amount: Uint128) -> Result<Re
     USER_INFO.update(
         deps.storage,
         &user_addr,
-        |balance: Option<UserData>| -> StdResult<_> { 
-            match balance {
+        |ud: Option<UserData>| -> StdResult<_> { 
+            match ud {
                 Some(user_data) => Ok(
                     UserData {
-                        generic_token_deposited: user_data.generic_token_deposited + amount,
+                        generic_token_deposited: user_data.generic_token_deposited.checked_add(amount).unwrap(),
                     }
                 ),
                 None => Ok (UserData {
@@ -89,8 +89,27 @@ pub fn try_deposit(deps: DepsMut, user_addr: Addr, amount: Uint128) -> Result<Re
     Ok(Response::default())
 }
 
-pub fn try_withdraw(deps: DepsMut, info: MessageInfo, amount: Uint128) -> Result<Response, ContractError>{
-    Ok(Response::new().add_attribute("not", "yet implemented"))
+/// Ensure user exists, and subtract from deposit
+/// 
+/// TODO (do after borrowing is implemented):
+///     Must ensure that the user is still liquid after withdrawal 
+///     ie Borrow amount must not exceed deposited amount
+pub fn try_withdraw(deps: DepsMut, info: MessageInfo, withdraw_amount: Uint128) -> Result<Response, ContractError>{
+    let user_data = USER_INFO.may_load(deps.storage, &info.sender).unwrap();
+    match user_data {
+        Some(ud) => {
+            let deposit_amount = ud.generic_token_deposited;
+            if withdraw_amount > deposit_amount {
+                return Err(ContractError::InsufficientDeposit {  });
+            }
+            let updated_ud = UserData { 
+                generic_token_deposited: ud.generic_token_deposited.checked_sub(withdraw_amount).unwrap() 
+            };
+            USER_INFO.save(deps.storage, &info.sender, &updated_ud)?;
+        },
+        None => return Err(ContractError::UserDNE {  })
+    };
+    Ok(Response::default())
 }
 
 pub fn try_borrow(deps: DepsMut, info: MessageInfo, amount: Uint128) -> Result<Response, ContractError>{
@@ -161,6 +180,21 @@ mod tests {
         assert_eq!(
             response,
             Ok(None)
+        );
+
+        // test withdrawal
+        let withdraw_msg = ExecuteMsg::Withdraw { amount: Uint128::from(99u128) };
+        let info = mock_info("user1", &[]);
+        let res = execute(deps.as_mut(), env.clone(), info.clone(), withdraw_msg.clone());
+        match res {
+            Ok(_) => {}
+            Err(_) => panic!("Should not have received an error"),
+        }
+        
+        let response : StdResult<Option<UserInfoResponse>> = get_user_info(deps.as_ref(), "user1".to_string());
+        assert_eq!(
+            response,
+            Ok(Some(UserInfoResponse { generic_token_deposited: Uint128::from(1u128).u128() }))
         );
 
         // TODO why doesn't this work?
