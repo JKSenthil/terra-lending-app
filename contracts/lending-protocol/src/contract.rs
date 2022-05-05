@@ -1,8 +1,8 @@
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
-use cosmwasm_std::{to_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult, StdError, Uint128, from_binary, Addr};
+use cosmwasm_std::{to_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult, StdError, Uint128, from_binary, Addr, attr};
 use cw2::set_contract_version;
-use cw20::{Cw20ReceiveMsg,};
+use cw20::{Cw20ReceiveMsg, Cw20Contract, Cw20ExecuteMsg,};
 
 use crate::error::ContractError;
 use crate::msg::{ExecuteMsg, QueryMsg, UserInfoResponse, InstantiateMsg, Cw20HookMsg};
@@ -24,6 +24,7 @@ pub fn instantiate(
     let config = Config {
         admin: deps.api.addr_validate(&msg.admin)?,
         generic_token: deps.api.addr_validate(&msg.generic_token)?,
+        lending_token: deps.api.addr_validate(&msg.lending_token)?,
     };
     CONFIG.save(deps.storage, &config)?;
 
@@ -78,10 +79,12 @@ pub fn try_deposit(deps: DepsMut, user_addr: Addr, amount: Uint128) -> Result<Re
                 Some(user_data) => Ok(
                     UserData {
                         generic_token_deposited: user_data.generic_token_deposited.checked_add(amount).unwrap(),
+                        total_loan_taken: user_data.total_loan_taken
                     }
                 ),
                 None => Ok (UserData {
                     generic_token_deposited: amount,
+                    total_loan_taken: Uint128::zero(),
                 })
             }
         },
@@ -95,15 +98,16 @@ pub fn try_deposit(deps: DepsMut, user_addr: Addr, amount: Uint128) -> Result<Re
 ///     Must ensure that the user is still liquid after withdrawal 
 ///     ie Borrow amount must not exceed deposited amount
 pub fn try_withdraw(deps: DepsMut, info: MessageInfo, withdraw_amount: Uint128) -> Result<Response, ContractError>{
-    let user_data = USER_INFO.may_load(deps.storage, &info.sender).unwrap();
-    match user_data {
-        Some(ud) => {
-            let deposit_amount = ud.generic_token_deposited;
+    let value = USER_INFO.may_load(deps.storage, &info.sender).unwrap();
+    match value {
+        Some(user_data) => {
+            let deposit_amount = user_data.generic_token_deposited;
             if withdraw_amount > deposit_amount {
                 return Err(ContractError::InsufficientDeposit {  });
             }
             let updated_ud = UserData { 
-                generic_token_deposited: ud.generic_token_deposited.checked_sub(withdraw_amount).unwrap() 
+                generic_token_deposited: user_data.generic_token_deposited.checked_sub(withdraw_amount).unwrap(),
+                total_loan_taken: user_data.total_loan_taken 
             };
             USER_INFO.save(deps.storage, &info.sender, &updated_ud)?;
         },
@@ -112,8 +116,38 @@ pub fn try_withdraw(deps: DepsMut, info: MessageInfo, withdraw_amount: Uint128) 
     Ok(Response::default())
 }
 
-pub fn try_borrow(deps: DepsMut, info: MessageInfo, amount: Uint128) -> Result<Response, ContractError>{
-    Ok(Response::new().add_attribute("not", "yet implemented"))
+pub fn try_borrow(deps: DepsMut, info: MessageInfo, borrow_amount: Uint128) -> Result<Response, ContractError>{
+    let mint_response;
+    let value = USER_INFO.may_load(deps.storage, &info.sender).unwrap();
+    match value {
+        Some(user_data) => {
+            if borrow_amount > (user_data.generic_token_deposited - user_data.total_loan_taken) {
+                return Err(ContractError::InsufficientDeposit {  });
+            }
+            // mint lending token and send to borrower
+            let config = CONFIG.load(deps.storage)?;
+            mint_response = Cw20Contract(config.lending_token).call(
+                Cw20ExecuteMsg::Mint { 
+                    recipient: info.sender.to_string(), 
+                    amount: borrow_amount
+                }
+            )?;
+            let updated_ud = UserData { 
+                generic_token_deposited: user_data.generic_token_deposited,
+                total_loan_taken: user_data.total_loan_taken.checked_add(borrow_amount).unwrap()
+            };
+            USER_INFO.save(deps.storage, &info.sender, &updated_ud)?;
+        },
+        None => return Err(ContractError::UserDNE { })
+    }
+    Ok(Response::new()
+        .add_message(mint_response)
+        .add_attributes(vec![
+            attr("action", "borrow"),
+            attr("borrower", info.sender.to_string()),
+            attr("amount", borrow_amount.to_string()),
+        ])
+    )
 }
 
 pub fn try_repay(deps: DepsMut, info: MessageInfo, amount: Uint128) -> Result<Response, ContractError>{
@@ -151,7 +185,11 @@ mod tests {
     #[test]
     fn basic_test() {
         let mut deps = mock_dependencies();
-        let instantiate_msg = InstantiateMsg{ admin: "admin".to_string(), generic_token: "token".to_string() };
+        let instantiate_msg = InstantiateMsg{ 
+            admin: "admin".to_string(), 
+            generic_token: "token".to_string(), 
+            lending_token: "lending token".to_string()
+        };
         let info = mock_info("creator", &[]);
         let env = mock_env();
         let res = instantiate(deps.as_mut(), env.clone(), info, instantiate_msg).unwrap();
