@@ -16,7 +16,7 @@ const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub fn instantiate(
     deps: DepsMut,
     _env: Env,
-    info: MessageInfo,
+    _info: MessageInfo,
     msg: InstantiateMsg,
 ) -> Result<Response, ContractError> {
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
@@ -24,13 +24,13 @@ pub fn instantiate(
     let config = Config {
         admin: deps.api.addr_validate(&msg.admin)?,
         generic_token: deps.api.addr_validate(&msg.generic_token)?,
-        lending_token: deps.api.addr_validate(&msg.lending_token)?,
+        lending_token: None,
     };
     CONFIG.save(deps.storage, &config)?;
 
     Ok(Response::new()
         .add_attribute("method", "instantiate")
-        .add_attribute("admin", info.sender)
+        .add_attribute("admin", msg.admin)
         .add_attribute("generic token", config.generic_token))
 }
 
@@ -46,6 +46,7 @@ pub fn execute(
         ExecuteMsg::Withdraw { amount } => try_withdraw(deps, info, amount), 
         ExecuteMsg::Borrow { amount } => try_borrow(deps, info, amount),
         ExecuteMsg::Repay { amount } => try_repay(deps, info, amount),
+        ExecuteMsg::SetLendingTokenAddress { address } => set_lending_token_addr(deps, info, address),
     }
 }
 
@@ -103,7 +104,7 @@ pub fn try_withdraw(deps: DepsMut, info: MessageInfo, withdraw_amount: Uint128) 
         Some(user_data) => {
             let deposit_amount = user_data.generic_token_deposited;
             if withdraw_amount > deposit_amount {
-                return Err(ContractError::InsufficientDeposit {  });
+                return Err(ContractError::InsufficientFunds {  });
             }
             let updated_ud = UserData { 
                 generic_token_deposited: user_data.generic_token_deposited.checked_sub(withdraw_amount).unwrap(),
@@ -122,11 +123,11 @@ pub fn try_borrow(deps: DepsMut, info: MessageInfo, borrow_amount: Uint128) -> R
     match value {
         Some(user_data) => {
             if borrow_amount > (user_data.generic_token_deposited - user_data.total_loan_taken) {
-                return Err(ContractError::InsufficientDeposit {  });
+                return Err(ContractError::InsufficientFunds {  });
             }
             // mint lending token and send to borrower
             let config = CONFIG.load(deps.storage)?;
-            mint_response = Cw20Contract(config.lending_token).call(
+            mint_response = Cw20Contract(config.lending_token.unwrap()).call(
                 Cw20ExecuteMsg::Mint { 
                     recipient: info.sender.to_string(), 
                     amount: borrow_amount
@@ -152,6 +153,22 @@ pub fn try_borrow(deps: DepsMut, info: MessageInfo, borrow_amount: Uint128) -> R
 
 pub fn try_repay(deps: DepsMut, info: MessageInfo, amount: Uint128) -> Result<Response, ContractError>{
     Ok(Response::new().add_attribute("not", "yet implemented"))
+}
+
+pub fn set_lending_token_addr(deps: DepsMut, info: MessageInfo, address: String) -> Result<Response, ContractError> {
+    let config = CONFIG.load(deps.storage).unwrap();
+    if info.sender != config.admin {
+        return Err(ContractError::Unauthorized {  });
+    }
+    let contract_addr = deps.api.addr_validate(&address)?;
+    CONFIG.save(deps.storage, 
+        &Config{ 
+            admin: config.admin, 
+            generic_token: config.generic_token, 
+            lending_token: Some(contract_addr)
+        }
+    )?;
+    Ok(Response::default())
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -188,12 +205,19 @@ mod tests {
         let instantiate_msg = InstantiateMsg{ 
             admin: "admin".to_string(), 
             generic_token: "token".to_string(), 
-            lending_token: "lending token".to_string()
         };
         let info = mock_info("creator", &[]);
         let env = mock_env();
         let res = instantiate(deps.as_mut(), env.clone(), info, instantiate_msg).unwrap();
         assert_eq!(0, res.messages.len());
+
+        let lend_token_addr_msg = ExecuteMsg::SetLendingTokenAddress { address: "token".to_string() };
+        let info = mock_info("admin", &[]);
+        let res = execute(deps.as_mut(), env.clone(), info.clone(), lend_token_addr_msg.clone());
+        match res {
+            Ok(_) => {}
+            Err(_) => panic!("Should not have received an error"),
+        }
 
         let recv_msg = ExecuteMsg::Receive(Cw20ReceiveMsg {
             sender: "user1".to_string(),
@@ -220,7 +244,7 @@ mod tests {
             Ok(None)
         );
 
-        // test withdrawal
+        // withdrawal test
         let withdraw_msg = ExecuteMsg::Withdraw { amount: Uint128::from(99u128) };
         let info = mock_info("user1", &[]);
         let res = execute(deps.as_mut(), env.clone(), info.clone(), withdraw_msg.clone());
@@ -235,6 +259,23 @@ mod tests {
             Ok(Some(UserInfoResponse { generic_token_deposited: Uint128::from(1u128).u128() }))
         );
 
+        // borrow test (insufficient funds)
+        let borrow_msg = ExecuteMsg::Borrow { amount: Uint128::from(2u128) };
+        let info = mock_info("user1", &[]);
+        let res = execute(deps.as_mut(), env.clone(), info.clone(), borrow_msg.clone());
+        match res {
+            Ok(_) => panic!("Should have received an error"),
+            _ => {},
+        }
+
+        // borrow test (sufficient funds)
+        let borrow_msg = ExecuteMsg::Borrow { amount: Uint128::from(1u128) };
+        let info = mock_info("user1", &[]);
+        let res = execute(deps.as_mut(), env.clone(), info.clone(), borrow_msg.clone());
+        match res {
+            Ok(_) => {},
+            _ => panic!("Should not have received an error"),
+        }
         // TODO why doesn't this work?
         // let result = query(
         //     deps.as_ref(), 
@@ -248,68 +289,3 @@ mod tests {
         // )
     }
 }
-
-    // #[test]
-    // fn proper_initialization() {
-    //     let mut deps = mock_dependencies_with_balance(&coins(2, "token"));
-
-    //     let msg = InstantiateMsg { count: 17 };
-    //     let info = mock_info("creator", &coins(1000, "earth"));
-
-    //     // we can just call .unwrap() to assert this was a success
-    //     let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
-    //     assert_eq!(0, res.messages.len());
-
-    //     // it worked, let's query the state
-    //     let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
-    //     let value: CountResponse = from_binary(&res).unwrap();
-    //     assert_eq!(17, value.count);
-    // }
-
-//     #[test]
-//     fn increment() {
-//         let mut deps = mock_dependencies_with_balance(&coins(2, "token"));
-
-//         let msg = InstantiateMsg { count: 17 };
-//         let info = mock_info("creator", &coins(2, "token"));
-//         let _res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
-
-//         // beneficiary can release it
-//         let info = mock_info("anyone", &coins(2, "token"));
-//         let msg = ExecuteMsg::Increment {};
-//         let _res = execute(deps.as_mut(), mock_env(), info, msg).unwrap();
-
-//         // should increase counter by 1
-//         let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
-//         let value: CountResponse = from_binary(&res).unwrap();
-//         assert_eq!(18, value.count);
-//     }
-
-//     #[test]
-//     fn reset() {
-//         let mut deps = mock_dependencies_with_balance(&coins(2, "token"));
-
-//         let msg = InstantiateMsg { count: 17 };
-//         let info = mock_info("creator", &coins(2, "token"));
-//         let _res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
-
-//         // beneficiary can release it
-//         let unauth_info = mock_info("anyone", &coins(2, "token"));
-//         let msg = ExecuteMsg::Reset { count: 5 };
-//         let res = execute(deps.as_mut(), mock_env(), unauth_info, msg);
-//         match res {
-//             Err(ContractError::Unauthorized {}) => {}
-//             _ => panic!("Must return unauthorized error"),
-//         }
-
-//         // only the original creator can reset the counter
-//         let auth_info = mock_info("creator", &coins(2, "token"));
-//         let msg = ExecuteMsg::Reset { count: 5 };
-//         let _res = execute(deps.as_mut(), mock_env(), auth_info, msg).unwrap();
-
-//         // should now be 5
-//         let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
-//         let value: CountResponse = from_binary(&res).unwrap();
-//         assert_eq!(5, value.count);
-//     }
-// }

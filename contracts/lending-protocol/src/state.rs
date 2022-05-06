@@ -8,7 +8,7 @@ use cw_storage_plus::{Item, Map};
 pub struct Config {
     pub admin: Addr,
     pub generic_token: Addr,
-    pub lending_token: Addr,
+    pub lending_token: Option<Addr>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]

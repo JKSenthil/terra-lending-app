@@ -18,8 +18,8 @@ pub enum ContractError {
     #[error("User does not exist")]
     UserDNE {},
 
-    #[error("Insufficient Desposit")]
-    InsufficientDeposit {},
+    #[error("Insufficient Funds")]
+    InsufficientFunds {},
     
     // Add any other custom errors you like here.
     // Look at https://docs.rs/thiserror/1.0.21/thiserror/ for details.

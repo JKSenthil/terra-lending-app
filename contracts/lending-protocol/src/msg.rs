@@ -9,7 +9,6 @@ use cw20::Cw20ReceiveMsg;
 pub struct InstantiateMsg {
     pub admin: String,
     pub generic_token: String,
-    pub lending_token: String,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
@@ -30,6 +29,11 @@ pub enum ExecuteMsg {
     Withdraw {amount: Uint128},
     Borrow {amount: Uint128},
     Repay {amount: Uint128},
+
+    ////////////////////
+    /// Admin operations
+    ////////////////////
+    SetLendingTokenAddress {address: String}
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
