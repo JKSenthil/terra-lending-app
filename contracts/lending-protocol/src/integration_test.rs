@@ -1,10 +1,10 @@
 #![cfg(test)]
 
-use cosmwasm_std::{coins, to_binary, Addr, Empty, Uint128};
+use cosmwasm_std::{coins, to_binary, Addr, Empty, Uint128, Timestamp, BlockInfo};
 use cw20::{Cw20Coin, Cw20Contract, Cw20ExecuteMsg, MinterResponse};
 use cw_multi_test::{App, Contract, ContractWrapper, Executor};
 
-use crate::{msg::{ExecuteMsg, InstantiateMsg, QueryMsg, Cw20HookMsg}};
+use crate::{msg::{ExecuteMsg, InstantiateMsg, QueryMsg, Cw20HookMsg, UserInfoResponse}};
 
 pub fn contract_lending_protocol() -> Box<dyn Contract<Empty>> {
     let contract = ContractWrapper::new(
@@ -135,7 +135,7 @@ fn integration() {
     /*
      * user1 requests to borrow 1 lending token
      */
-    let borrow_amt = 1_u128.pow(6);
+    let borrow_amt = 1000_u128.pow(6);
     let borrow_msg = ExecuteMsg::Borrow { amount: Uint128::from(borrow_amt) };
     router.execute_contract(user1.clone(), lending_protocol_addr.clone(), &borrow_msg, &[]).unwrap();
     // check lending tokens have been minted to user1
@@ -144,4 +144,42 @@ fn integration() {
         balance.u128(),
         borrow_amt
     );
+
+    /*
+     * user1 trys to withdraw more that allowed, due to collateral on loan
+     */
+    let withdraw_amt = 4000_u128.pow(6);
+    let withdraw_msg = ExecuteMsg::Withdraw { amount: Uint128::from(withdraw_amt) };
+    router.execute_contract(user1.clone(), lending_protocol_addr.clone(), &withdraw_msg, &[]).unwrap_err();
+    // check contract still has 4000_u128 in account
+    let balance = generic_token_contract.balance::<_, _, Empty>(&router, lending_protocol_addr.clone()).unwrap();
+    assert_eq!(
+        balance.u128(),
+        4000_u128.pow(6)
+    );
+
+    /*
+     * user1 trys allowed withdrawal
+     */
+    let withdraw_amt = 3000_u128.pow(6);
+    let withdraw_msg = ExecuteMsg::Withdraw { amount: Uint128::from(withdraw_amt) };
+    router.execute_contract(user1.clone(), lending_protocol_addr.clone(), &withdraw_msg, &[]).unwrap();
+    // check contract has right amount left in its account
+    let balance = generic_token_contract.balance::<_, _, Empty>(&router, lending_protocol_addr.clone()).unwrap();
+    assert_eq!(
+        balance.u128(),
+        4000_u128.pow(6) - 3000_u128.pow(6)
+    );
+
+    /*
+     * user1 wants to see current loan status
+     */
+    let query_msg = QueryMsg::GetUserInfo { address: user1.clone().to_string() };
+    let user_info: Option<UserInfoResponse> = router.wrap().query_wasm_smart(lending_protocol_addr.clone(), &query_msg).unwrap();
+    match user_info {
+        Some(ui) => {
+            assert_eq!(ui.total_loan_owed.u128(), 1000_u128.pow(6));
+        },
+        None => panic!("User should exist!")
+    };
 }

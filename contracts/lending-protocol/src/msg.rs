@@ -1,4 +1,4 @@
-use cosmwasm_std::{Uint128, Addr};
+use cosmwasm_std::{Uint128};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +15,9 @@ pub struct InstantiateMsg {
 pub enum Cw20HookMsg {
     /// Deposit generic token
     Deposit {},
+
+    /// Payoff loan
+    Payoff {},
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
@@ -28,7 +31,6 @@ pub enum ExecuteMsg {
     ////////////////////
     Withdraw {amount: Uint128},
     Borrow {amount: Uint128},
-    Repay {amount: Uint128},
 
     ////////////////////
     /// Admin operations
@@ -46,7 +48,7 @@ pub enum QueryMsg {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct UserInfoResponse {
-    pub generic_token_deposited: u128,
-    pub lending_token_withdrawed: u128,
-    pub total_loan_owed: u128,
+    pub generic_token_deposited: Uint128,
+    pub lending_token_withdrawed: Uint128,
+    pub total_loan_owed: Uint128,
 }

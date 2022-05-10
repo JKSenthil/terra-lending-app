@@ -66,8 +66,8 @@ impl LoanInfo {
         LoanInfo {
             start_time: ts, 
             last_update_time: ts, 
-            principal: Decimal::new(principal), 
-            amount_owed: Decimal::zero(),
+            principal: Decimal::new(principal),
+            amount_owed: Decimal::new(principal),
         }
     }
 
