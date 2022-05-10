@@ -1,12 +1,13 @@
 #[cfg(not(feature = "library"))]
-use cosmwasm_std::entry_point;
-use cosmwasm_std::{to_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult, StdError, Uint128, from_binary, Addr, attr};
+use cosmwasm_std::{entry_point, Order};
+use cosmwasm_std::{to_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult, StdError, Uint128, from_binary, Addr, attr, Timestamp, Decimal};
 use cw2::set_contract_version;
 use cw20::{Cw20ReceiveMsg, Cw20Contract, Cw20ExecuteMsg,};
+use cw_storage_plus::Bound;
 
 use crate::error::ContractError;
 use crate::msg::{ExecuteMsg, QueryMsg, UserInfoResponse, InstantiateMsg, Cw20HookMsg};
-use crate::state::{UserData, USER_INFO, Config, CONFIG};
+use crate::state::{UserData, USER_INFO, Config, CONFIG, LoanInfo, LOANS};
 
 // version info for migration info
 const CONTRACT_NAME: &str = "crates.io:lending-app";
@@ -37,14 +38,14 @@ pub fn instantiate(
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn execute(
     deps: DepsMut,
-    _env: Env,
+    env: Env,
     info: MessageInfo,
     msg: ExecuteMsg,
 ) -> Result<Response, ContractError> {
     match msg {
         ExecuteMsg::Receive(_msg) => receive_cw20(deps, info, _msg),
         ExecuteMsg::Withdraw { amount } => try_withdraw(deps, info, amount), 
-        ExecuteMsg::Borrow { amount } => try_borrow(deps, info, amount),
+        ExecuteMsg::Borrow { amount } => try_borrow(deps, info, env, amount),
         ExecuteMsg::Repay { amount } => try_repay(deps, info, amount),
         ExecuteMsg::SetLendingTokenAddress { address } => set_lending_token_addr(deps, info, address),
     }
@@ -77,16 +78,8 @@ pub fn try_deposit(deps: DepsMut, user_addr: Addr, amount: Uint128) -> Result<Re
         &user_addr,
         |ud: Option<UserData>| -> StdResult<_> { 
             match ud {
-                Some(user_data) => Ok(
-                    UserData {
-                        generic_token_deposited: user_data.generic_token_deposited.checked_add(amount).unwrap(),
-                        total_loan_taken: user_data.total_loan_taken
-                    }
-                ),
-                None => Ok (UserData {
-                    generic_token_deposited: amount,
-                    total_loan_taken: Uint128::zero(),
-                })
+                Some(user_data) => Ok(user_data.deposit_amount(amount)),
+                None => Ok (UserData::new().deposit_amount(amount))
             }
         },
     )?;
@@ -106,23 +99,19 @@ pub fn try_withdraw(deps: DepsMut, info: MessageInfo, withdraw_amount: Uint128) 
             if withdraw_amount > deposit_amount {
                 return Err(ContractError::InsufficientFunds {  });
             }
-            let updated_ud = UserData { 
-                generic_token_deposited: user_data.generic_token_deposited.checked_sub(withdraw_amount).unwrap(),
-                total_loan_taken: user_data.total_loan_taken 
-            };
-            USER_INFO.save(deps.storage, &info.sender, &updated_ud)?;
+            USER_INFO.save(deps.storage, &info.sender, &user_data.withdraw_amount(withdraw_amount))?;
         },
         None => return Err(ContractError::UserDNE {  })
     };
     Ok(Response::default())
 }
 
-pub fn try_borrow(deps: DepsMut, info: MessageInfo, borrow_amount: Uint128) -> Result<Response, ContractError>{
+pub fn try_borrow(deps: DepsMut, info: MessageInfo, env: Env, borrow_amount: Uint128) -> Result<Response, ContractError>{
     let mint_response;
     let value = USER_INFO.may_load(deps.storage, &info.sender).unwrap();
     match value {
         Some(user_data) => {
-            if borrow_amount > (user_data.generic_token_deposited - user_data.total_loan_taken) {
+            if borrow_amount > (user_data.generic_token_deposited - user_data.borrow_amt) {
                 return Err(ContractError::InsufficientFunds {  });
             }
             // mint lending token and send to borrower
@@ -133,11 +122,12 @@ pub fn try_borrow(deps: DepsMut, info: MessageInfo, borrow_amount: Uint128) -> R
                     amount: borrow_amount
                 }
             )?;
-            let updated_ud = UserData { 
-                generic_token_deposited: user_data.generic_token_deposited,
-                total_loan_taken: user_data.total_loan_taken.checked_add(borrow_amount).unwrap()
-            };
-            USER_INFO.save(deps.storage, &info.sender, &updated_ud)?;
+            
+            // create and save loan
+            let loan_id = user_data.curr_loan_id;
+            let loan_info = LoanInfo::new(env.block.time, borrow_amount);
+            LOANS.save(deps.storage, (&info.sender, loan_id.u128()), &loan_info)?;
+            USER_INFO.save(deps.storage, &info.sender, &user_data.borrow_amount(borrow_amount))?;
         },
         None => return Err(ContractError::UserDNE { })
     }
@@ -152,7 +142,7 @@ pub fn try_borrow(deps: DepsMut, info: MessageInfo, borrow_amount: Uint128) -> R
 }
 
 pub fn try_repay(deps: DepsMut, info: MessageInfo, amount: Uint128) -> Result<Response, ContractError>{
-    Ok(Response::new().add_attribute("not", "yet implemented"))
+    Ok(Response::default())
 }
 
 pub fn set_lending_token_addr(deps: DepsMut, info: MessageInfo, address: String) -> Result<Response, ContractError> {
@@ -172,18 +162,27 @@ pub fn set_lending_token_addr(deps: DepsMut, info: MessageInfo, address: String)
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
-pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
+pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
-        QueryMsg::GetUserInfo {address} => to_binary(&get_user_info(deps, address)?),
+        QueryMsg::GetUserInfo {address} => to_binary(&get_user_info(deps, env,address)?),
     }
 }
 
-pub fn get_user_info(deps: Deps, address: String) -> StdResult<Option<UserInfoResponse>> {
+pub fn get_user_info(deps: Deps, env: Env, address: String) -> StdResult<Option<UserInfoResponse>> {
     let address = deps.api.addr_validate(&address)?;
+    // accumulate loans and add totals
+    let loans: StdResult<Vec<_>> = LOANS.prefix(&address).range(deps.storage, None, None, Order::Ascending).collect();
+    let mut total_loan = Decimal::zero();
+    for (_, loan_info) in loans.unwrap() {
+        let updated_loan_info = loan_info.update_loan(env.block.time);
+        total_loan += updated_loan_info.amount_owed;
+    }
     let res = match USER_INFO.may_load(deps.storage, &address) {
         Ok(Some(user_info)) => Some(
             UserInfoResponse { 
-                generic_token_deposited: user_info.generic_token_deposited.u128() 
+                generic_token_deposited: user_info.generic_token_deposited.u128(),
+                lending_token_withdrawed: user_info.borrow_amt.u128(),
+                total_loan_owed: total_loan.atomics().u128(), 
             }
         ),
         Ok(None) => None,
@@ -231,14 +230,14 @@ mod tests {
             Err(_) => panic!("Should not have received an error"),
         }
         
-        let response : StdResult<Option<UserInfoResponse>> = get_user_info(deps.as_ref(), "user1".to_string());
+        let response : StdResult<Option<UserInfoResponse>> = get_user_info(deps.as_ref(), env.clone(), "user1".to_string());
         assert_eq!(
             response,
-            Ok(Some(UserInfoResponse { generic_token_deposited: Uint128::from(100u128).u128() }))
+            Ok(Some(UserInfoResponse {generic_token_deposited:100u128, lending_token_withdrawed: 0, total_loan_owed: 0 }))
         );
 
         // test non-existent user
-        let response : StdResult<Option<UserInfoResponse>> = get_user_info(deps.as_ref(), "user2".to_string());
+        let response : StdResult<Option<UserInfoResponse>> = get_user_info(deps.as_ref(), env.clone(), "user2".to_string());
         assert_eq!(
             response,
             Ok(None)
@@ -253,10 +252,10 @@ mod tests {
             Err(_) => panic!("Should not have received an error"),
         }
         
-        let response : StdResult<Option<UserInfoResponse>> = get_user_info(deps.as_ref(), "user1".to_string());
+        let response : StdResult<Option<UserInfoResponse>> = get_user_info(deps.as_ref(), env.clone(), "user1".to_string());
         assert_eq!(
             response,
-            Ok(Some(UserInfoResponse { generic_token_deposited: Uint128::from(1u128).u128() }))
+            Ok(Some(UserInfoResponse { generic_token_deposited: 1u128, lending_token_withdrawed: 0, total_loan_owed: 0 }))
         );
 
         // borrow test (insufficient funds)

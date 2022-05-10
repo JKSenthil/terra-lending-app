@@ -112,9 +112,7 @@ fn integration() {
     ).unwrap();
     let lending_token_contract = Cw20Contract(lending_addr.clone());
 
-    /*
-     * setup lending token address in lending protocol
-     */
+    // setup lending token address in lending protocol
     let msg = ExecuteMsg::SetLendingTokenAddress { address: lending_addr.clone().into_string() };
     router.execute_contract(admin.clone(), lending_protocol_addr.clone(), &msg, &[]).unwrap();
 

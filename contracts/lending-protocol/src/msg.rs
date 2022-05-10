@@ -47,4 +47,6 @@ pub enum QueryMsg {
 #[serde(rename_all = "snake_case")]
 pub struct UserInfoResponse {
     pub generic_token_deposited: u128,
+    pub lending_token_withdrawed: u128,
+    pub total_loan_owed: u128,
 }
