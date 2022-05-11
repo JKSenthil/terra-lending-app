@@ -32,7 +32,4 @@ pub enum ContractError {
 
     #[error("Invalid png header")]
     InvalidPngHeader {},
-
-    #[error("Duplicate initial balance addresses")]
-    DuplicateInitialBalanceAddresses {},
 }

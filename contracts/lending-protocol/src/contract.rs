@@ -1,6 +1,6 @@
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::{entry_point, Order};
-use cosmwasm_std::{to_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult, StdError, Uint128, from_binary, Addr, attr, Timestamp, Decimal, Storage};
+use cosmwasm_std::{to_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult, Uint128, from_binary, Addr, attr, Storage};
 use cw2::set_contract_version;
 use cw20::{Cw20ReceiveMsg, Cw20Contract, Cw20ExecuteMsg,};
 
@@ -26,6 +26,7 @@ pub fn instantiate(
         generic_token: deps.api.addr_validate(&msg.generic_token)?,
         lending_token: None,
     };
+
     CONFIG.save(deps.storage, &config)?;
 
     Ok(Response::new()
@@ -99,26 +100,21 @@ pub fn try_payoff(deps: DepsMut, user_addr: Addr, env: Env, amount: Uint128) -> 
     let mut payoff_amount = amount;
     let loans: StdResult<Vec<_>> = LOANS.prefix(&user_addr).range(deps.storage, None, None, Order::Ascending).collect();
     for (loan_id, loan_info) in loans.unwrap() {
-        let updated_loan_info = loan_info.update_loan(env.block.time);
-        let mut principal = updated_loan_info.principal.atomics();
-        let mut amount_owed = updated_loan_info.amount_owed.atomics();
+        let mut amount_owed = loan_info.clone().amount_owed(env.block.time);
         if payoff_amount <= amount_owed {
-            principal = amount_owed - payoff_amount;
             amount_owed -= payoff_amount;
             if amount_owed == Uint128::zero() {
-                LOANS.remove(deps.storage, (&user_addr, loan_id));
+                LOANS.remove(deps.storage, (&user_addr, loan_id.into()));
             } else {
-                LOANS.save(deps.storage, (&user_addr, loan_id), &LoanInfo{ 
-                    start_time: updated_loan_info.start_time, 
-                    last_update_time: env.block.time, 
-                    principal: Decimal::new(principal), 
-                    amount_owed: Decimal::new(amount_owed) 
+                LOANS.save(deps.storage, (&user_addr, loan_id.into()), &LoanInfo{ 
+                    start_time: loan_info.start_time, 
+                    principal: amount_owed, 
                 })?;
             }
             break;
         } else {
             payoff_amount -= amount_owed;
-            LOANS.remove(deps.storage, (&user_addr, loan_id));
+            LOANS.remove(deps.storage, (&user_addr, loan_id.into()));
         }
     }
 
@@ -190,7 +186,7 @@ pub fn try_borrow(deps: DepsMut, info: MessageInfo, env: Env, borrow_amount: Uin
             // create and save loan
             let loan_id = user_data.curr_loan_id;
             let loan_info = LoanInfo::new(env.block.time, borrow_amount);
-            LOANS.save(deps.storage, (&info.sender, loan_id.u128()), &loan_info)?;
+            LOANS.save(deps.storage, (&info.sender, loan_id.u128().into()), &loan_info)?;
             USER_INFO.save(deps.storage, &info.sender, &user_data.borrow_amount(borrow_amount))?;
         },
         None => return Err(ContractError::UserDNE { })
@@ -206,10 +202,16 @@ pub fn try_borrow(deps: DepsMut, info: MessageInfo, env: Env, borrow_amount: Uin
 }
 
 pub fn set_lending_token_addr(deps: DepsMut, info: MessageInfo, address: String) -> Result<Response, ContractError> {
+    println!("HOLA");
     let config = CONFIG.load(deps.storage).unwrap();
     if info.sender != config.admin {
         return Err(ContractError::Unauthorized {  });
     }
+    let canonical = deps.api.addr_canonicalize(&address)?;
+    let normalized = deps.api.addr_humanize(&canonical)?;
+    println!("{}", canonical);
+    println!("{}", normalized);
+
     let contract_addr = deps.api.addr_validate(&address)?;
     CONFIG.save(deps.storage, 
         &Config{ 
@@ -223,12 +225,11 @@ pub fn set_lending_token_addr(deps: DepsMut, info: MessageInfo, address: String)
 
 pub fn get_total_owed(storage: &mut dyn Storage, env: Env, addr: Addr) -> Uint128 {
     let loans: StdResult<Vec<_>> = LOANS.prefix(&addr).range(storage, None, None, Order::Ascending).collect();
-    let mut total_loan = Decimal::zero();
+    let mut total_loan = Uint128::zero();
     for (_, loan_info) in loans.unwrap() {
-        let updated_loan_info = loan_info.update_loan(env.block.time);
-        total_loan += updated_loan_info.amount_owed;
+        total_loan += loan_info.amount_owed(env.block.time);
     }
-    total_loan.atomics()
+    total_loan
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -242,17 +243,16 @@ pub fn get_user_info(deps: Deps, env: Env, address: String) -> StdResult<Option<
     let address = deps.api.addr_validate(&address)?;
     // accumulate loans and add totals
     let loans: StdResult<Vec<_>> = LOANS.prefix(&address).range(deps.storage, None, None, Order::Ascending).collect();
-    let mut total_loan = Decimal::zero();
+    let mut total_loan = Uint128::zero();
     for (_, loan_info) in loans.unwrap() {
-        let updated_loan_info = loan_info.update_loan(env.block.time);
-        total_loan += updated_loan_info.amount_owed;
+        total_loan += loan_info.amount_owed(env.block.time);
     }
     let res = match USER_INFO.may_load(deps.storage, &address) {
         Ok(Some(user_info)) => Some(
             UserInfoResponse { 
                 generic_token_deposited: user_info.generic_token_deposited,
                 lending_token_withdrawed: user_info.borrow_amt,
-                total_loan_owed: total_loan.atomics(), 
+                total_loan_owed: total_loan, 
             }
         ),
         Ok(None) => None,
@@ -270,7 +270,7 @@ mod tests {
 
     #[test]
     fn basic_test() {
-        let mut deps = mock_dependencies();
+        let mut deps = mock_dependencies(&[]);
         let instantiate_msg = InstantiateMsg{ 
             admin: "admin".to_string(), 
             generic_token: "token".to_string(), 

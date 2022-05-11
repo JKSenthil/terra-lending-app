@@ -40,18 +40,17 @@ optimize = """docker run --rm -v "$(pwd)":/code \
 """
 
 [dependencies]
-cosmwasm-std = { version = "1.0.0-beta6" }
-cosmwasm-storage = { version = "1.0.0-beta6" }
-cw-storage-plus = "0.13"
-cw2 = "0.13"
-cw20 = "0.13.2"
-cw20-base = "0.13.2"
-cosmwasm-vm = "0.16.7"
-schemars = "0.8"
-serde = { version = "1.0", default-features = false, features = ["derive"] }
-thiserror = { version = "1.0" }
+cosmwasm-std = { version = "0.16.0" }
+cw-storage-plus = { version = "0.9.1" }
+cw2 = { version = "0.9.1" }
+cw20 = { version = "0.9.1" }
+cw20-base = "0.9.1"
+schemars = "0.8.1"
+serde = { version = "1.0.103", default-features = false, features = ["derive"] }
+thiserror = { version = "1.0.23" }
 lending-token = { path = "../lending-token" }
+forward_ref = "1"
 
 [dev-dependencies]
-cosmwasm-schema = { version = "1.0.0-beta6" }
-cw-multi-test = "0.13"
+cosmwasm-schema = { version = "0.16.0" }
+cw-multi-test = "0.9.0"

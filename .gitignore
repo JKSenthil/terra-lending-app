@@ -1,7 +1,7 @@
 # Build results
 target
 contracts/lending/target/*
-contracts/lending-token/target/*
+contracts/cw20-legacy/target/*
 
 # Cargo+Git helper file (https://github.com/rust-lang/cargo/blob/0.44.1/src/cargo/sources/git/utils.rs#L320-L327)
 .cargo-ok
@@ -21,3 +21,6 @@ contracts/lending-token/target/*
 *.pdb
 
 artifacts
+
+# Byte-compiled / optimized / DLL files
+deploy-scripts/__pycache__/
