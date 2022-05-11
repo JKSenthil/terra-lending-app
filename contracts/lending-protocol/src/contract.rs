@@ -202,16 +202,11 @@ pub fn try_borrow(deps: DepsMut, info: MessageInfo, env: Env, borrow_amount: Uin
 }
 
 pub fn set_lending_token_addr(deps: DepsMut, info: MessageInfo, address: String) -> Result<Response, ContractError> {
-    println!("HOLA");
     let config = CONFIG.load(deps.storage).unwrap();
     if info.sender != config.admin {
         return Err(ContractError::Unauthorized {  });
     }
-    let canonical = deps.api.addr_canonicalize(&address)?;
-    let normalized = deps.api.addr_humanize(&canonical)?;
-    println!("{}", canonical);
-    println!("{}", normalized);
-
+    
     let contract_addr = deps.api.addr_validate(&address)?;
     CONFIG.save(deps.storage, 
         &Config{ 

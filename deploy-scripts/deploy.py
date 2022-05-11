@@ -1,64 +1,82 @@
-from terra_sdk.client.lcd import Wallet
-from terra_sdk.client.lcd.api.tx import CreateTxOptions
+import pickle
+import argparse
+
+from terra_sdk.client.lcd import LCDClient
+from terra_sdk.key.mnemonic import MnemonicKey
 from terra_sdk.client.localterra import LocalTerra
-from terra_sdk.util.contract import read_file_as_b64, get_code_id, get_contract_address
-from terra_sdk.core.wasm import MsgStoreCode, MsgInstantiateContract, MsgExecuteContract
-
-def store_contract(deployer: Wallet, contract_name: str) -> str:
-    """Uploads contract, returns code ID"""
-    contract_bytes = read_file_as_b64(f"../artifacts/{contract_name}.wasm")
-    store_code = MsgStoreCode(
-        deployer.key.acc_address,
-        contract_bytes
-    )
-    tx = deployer.create_and_sign_tx(
-        CreateTxOptions(msgs=[store_code])
-    )
-    result = lt.tx.broadcast(tx)
-    code_id = get_code_id(result)
-    return code_id
-
-def instantiate_contract(code_id: str, init_msg) -> str:
-    """Instantiates a new contract with code_id and init_msg, returns address"""
-    instantiate = MsgInstantiateContract(
-        owner=deployer.key.acc_address,
-        code_id=code_id,
-        init_msg=init_msg
-    )
-    tx = deployer.create_and_sign_tx(
-        CreateTxOptions(msgs=[instantiate])
-    )
-    result = lt.tx.broadcast(tx)
-    contract_address = get_contract_address(result)
-    return contract_address
-
-def execute_contract(sender: Wallet, contract_addr: str, execute_msg):
-    execute = MsgExecuteContract(
-        sender=sender.key.acc_address,
-        contract=contract_addr,
-        execute_msg=execute_msg
-    )
-    tx = sender.create_and_sign_tx(
-        CreateTxOptions(msgs=[execute])
-    )
-    result = lt.tx.broadcast(tx)
-    return result
+from helpers import store_contract, instantiate_contract, execute_contract
 
 if __name__ == "__main__":
-    lt = LocalTerra()
-    deployer = lt.wallets["test1"]
+    parser = argparse.ArgumentParser()
+    parser.add_argument("network", help="localterra|bombay",type=str)
+    args = parser.parse_args()
+
+    if args.network == "localterra":
+        lt = LocalTerra()
+        deployer = lt.wallets["test1"]
+    elif args.network == "bombay":
+        lt = LCDClient(url="https://lcd.terra.dev", chain_id="bombay-12")
+        mnemonic = open("mnemonic.txt", "r").read()
+        mk = MnemonicKey(mnemonic=mnemonic)
+        deployer = lt.wallet(mk)
+    else:
+        print("valid network required")
+        exit(1)
 
     # deploy generic token
-    generic_code_id = store_contract(deployer, "lending_token")
-    generic_addr = instantiate_contract(generic_code_id, {
+    generic_code_id = store_contract(lt, deployer, "lending_token")
+    generic_token_addr = instantiate_contract(lt, deployer, generic_code_id, {
         "name": "Generic Token",
         "symbol": "GNT", 
         "decimals": 6,
         "initial_balances": [
-            {"address": deployer.key.acc_address, "amount": f"{pow(50, 6)}"}
-        ]
+            {"address": deployer.key.acc_address, "amount": f"{pow(10, 6)}"}
+        ],
+        "mint": {
+            "minter": deployer.key.acc_address
+        }
     })
 
-    print(
-        lt.wasm.contract_query(generic_addr, {"balance": {"address": deployer.key.acc_address}})
+    # deploy lending protocol contract
+    lending_protocol_id = store_contract(lt, deployer, "lending_protocol")
+    lending_protocol_addr = instantiate_contract(lt, deployer, lending_protocol_id, {
+        "admin": deployer.key.acc_address,
+        "generic_token": generic_token_addr
+    })
+
+    # deploy lending token
+    lending_code_id = store_contract(lt, deployer, "lending_token")
+    lending_token_addr = instantiate_contract(lt, deployer, lending_code_id, {
+        "name": "Lending Token",
+        "symbol": "LND", 
+        "decimals": 6,
+        "initial_balances": [
+            {"address": deployer.key.acc_address, "amount": f"{100}"}
+        ],
+        "mint": {
+            "minter": lending_protocol_addr
+        }
+    })
+
+    # send lending token address in protocol
+    results = execute_contract(
+        lt, 
+        deployer,
+        lending_protocol_addr,
+        {
+            "set_lending_token_address": {
+                "address": lending_token_addr
+            }
+        }
     )
+
+    config = {
+        "generic_token_code_id": generic_code_id,
+        "generic_token_addr": generic_token_addr,
+        "lending_token_code_id": lending_code_id,
+        "lending_token_addr": lending_token_addr,
+        "lending_protocol_code_id": lending_protocol_id,
+        "lending_protocol_addr": lending_protocol_addr
+    }
+
+    pickle.dump(config, open(f"config_{args.network}.p", "wb" ))

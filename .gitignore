@@ -24,3 +24,9 @@ artifacts
 
 # Byte-compiled / optimized / DLL files
 deploy-scripts/__pycache__/
+
+# Mnemonic for wallet
+deploy-scripts/mnemonic.txt
+
+# pickle
+deploy-scripts/*.p
