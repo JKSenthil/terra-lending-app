@@ -1,7 +1,5 @@
 # Simple Lending App
 
-[Project outline](https://docs.google.com/document/d/1eiPqJnV-x0gBApQtswI_Wu2wG5D8vPol2cpnUmADryM/edit)
-
 To understand the framework better, please read the overview in the
 [cosmwasm repo](https://github.com/CosmWasm/cosmwasm/blob/master/README.md),
 and dig into the [cosmwasm docs](https://www.cosmwasm.com).
