@@ -1,4 +1,4 @@
-# Simple Lending App
+# Simple Lending App (see branch for Terra specific implementation)
 
 To understand the framework better, please read the overview in the
 [cosmwasm repo](https://github.com/CosmWasm/cosmwasm/blob/master/README.md),
